@@ -12,12 +12,6 @@ Provides an easy way to create an excel file.
 go get github.com/ybalcin/exceler
 ```
 
-- If your packages are managed using [Go Modules](https://go.dev/blog/using-go-modules), please install with following command.
-
-```bash
-go get github.com/ybalcin/exceler
-```
-
 ### Create Excel
 
 ```go
