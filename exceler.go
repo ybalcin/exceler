@@ -11,7 +11,7 @@ import (
 )
 
 type (
-	file struct {
+	File struct {
 		Name      string
 		extension string
 		sheets    []sheet
@@ -19,11 +19,11 @@ type (
 
 	sheet struct {
 		name    string
-		headers []header
+		columns []column
 		rows    []row
 	}
 
-	header struct {
+	column struct {
 		name string
 	}
 
@@ -33,27 +33,29 @@ type (
 
 	cell struct {
 		value interface{}
+		name  string
 	}
 )
 
+const MaxCellIndexConst = 26
+const MaxRowCountConst = 10_000
+
 // New initializes new File
-func New(name string) *file {
+func New(name string) *File {
 	if name == "" {
 		name = uuid.NewString()
 	}
 
-	return &file{
+	return &File{
 		Name:      name,
 		extension: "xlsx",
 	}
 }
 
-// NewSheet initializes new sheet
 func NewSheet(name string) *sheet {
 	return &sheet{name: name}
 }
 
-// NewRow initializes new row
 func NewRow(cells ...cell) *row {
 	row := row{}
 	row.cells = make([]cell, len(cells))
@@ -64,38 +66,68 @@ func NewRow(cells ...cell) *row {
 	return &row
 }
 
-// NewHeader initializes new header
-func NewHeader(name string) header {
-	return header{name: name}
+func NewColumn(name string) column {
+	return column{name: name}
 }
 
-// NewCell initializes new cell
 func NewCell(value interface{}) cell {
 	return cell{value: value}
 }
 
-// AddSheet adds sheet to the file
-func (f *file) AddSheet(sheet sheet) {
+func (f *File) AddSheet(sheet sheet) {
 	f.sheets = append(f.sheets, sheet)
 }
 
-// AddRow adds row to the file
+func (f *File) Sheets() []sheet {
+	return f.sheets
+}
+
+func (s *sheet) Name() string {
+	return s.name
+}
+
+func (s *sheet) Rows() []row {
+	return s.rows
+}
+
+func (s *sheet) Columns() []column {
+	return s.columns
+}
+
+func (s column) Name() string {
+	return s.name
+}
+
+func (r row) Cells() []cell {
+	return r.cells
+}
+
+func (c cell) Value() interface{} {
+	return c.value
+}
+
+func (c cell) Name() interface{} {
+	return c.name
+}
+
+func (c *cell) SetName(name string) {
+	c.name = name
+}
+
 func (s *sheet) AddRow(row row) {
 	s.rows = append(s.rows, row)
 }
 
-// AddHeader adds header to the file
-func (s *sheet) AddHeader(headers ...header) {
-	s.headers = append(s.headers, headers...)
+func (s *sheet) AddColumn(columns ...column) {
+	s.columns = append(s.columns, columns...)
 }
 
-// AddCell adds cell to the file
 func (r *row) AddCell(cell ...cell) {
 	r.cells = append(r.cells, cell...)
 }
 
-// ToBuffer writes Excel file to the buffer
-func (f *file) ToBuffer() (*bytes.Buffer, error) {
+// ToBuffer writes Excel File to the buffer
+func (f *File) ToBuffer() (*bytes.Buffer, error) {
 	excelFile, err := fill(f)
 	if err != nil {
 		return nil, err
@@ -109,8 +141,8 @@ func (f *file) ToBuffer() (*bytes.Buffer, error) {
 	return buffer, nil
 }
 
-// Save saves file to the location
-func (f *file) Save(location string) error {
+// Save saves File to the location
+func (f *File) Save(location string) error {
 	excelFile, err := fill(f)
 	if err != nil {
 		return err
@@ -123,14 +155,14 @@ func (f *file) Save(location string) error {
 	return nil
 }
 
-func fill(f *file) (*excelize.File, error) {
+func fill(f *File) (*excelize.File, error) {
 	f.Name = fmt.Sprintf("%s.%s", f.Name, f.extension)
 
 	excelFile := excelize.NewFile()
 	defer excelFile.Close()
 
 	if len(f.sheets) < 1 {
-		return nil, errors.New("there is no any sheet in the file")
+		return nil, errors.New("there is no any sheet in the File")
 	}
 
 	rndSheetName := uuid.NewString()
@@ -165,8 +197,8 @@ func fill(f *file) (*excelize.File, error) {
 
 		wg.Add(1)
 		go func() {
-			// set headers
-			for j, col := range s.headers {
+			// set columns
+			for j, col := range s.columns {
 				cell := fmt.Sprintf("%s1", getColumn(j))
 				_ = excelFile.SetCellValue(s.name, cell, col.name)
 				_ = excelFile.SetCellStyle(s.name, cell, cell, headerStyle)
@@ -213,4 +245,83 @@ func getString(val interface{}) string {
 	}
 
 	return fmt.Sprintf("%v", val)
+}
+
+/*
+ReadFromBuffer reads from buffer and returns *File
+
+Params:
+
+	maxRowCount: the number of row that will read from every sheet, sets as MaxRowCountConst if 0
+	maxARowsCellCount: the number of cell that will read from every row, sets as MaxCellIndexConst if 0
+*/
+func ReadFromBuffer(bf *bytes.Buffer, maxRowCount, maxARowsCellCount int) (*File, error) {
+	if maxRowCount <= 0 {
+		maxRowCount = MaxRowCountConst
+	}
+	if maxARowsCellCount <= 0 || maxARowsCellCount > MaxCellIndexConst {
+		maxARowsCellCount = MaxCellIndexConst
+	}
+
+	f, err := excelize.OpenReader(bf)
+	if err != nil {
+		return nil, err
+	}
+
+	file := New("")
+
+	sheets := f.GetSheetList()
+
+	sheetCh := make(chan *sheet, len(sheets))
+
+	var wg sync.WaitGroup
+	wg.Add(len(sheets))
+
+	for _, s := range sheets {
+		s := s
+
+		go func(ch chan<- *sheet) {
+			sh := NewSheet(s)
+
+			for i := 1; i <= maxRowCount; i++ { // row
+				for j := 1; j <= maxARowsCellCount; j++ { // cell
+					// set column names
+					if i == 1 {
+						columnName, err := f.GetCellValue(s, fmt.Sprintf("%s%d", getColumn(j-1), i))
+						if err == nil && len([]rune(columnName)) > 0 {
+							sh.AddColumn(NewColumn(columnName))
+						}
+					}
+
+					// set cells
+					cellName := fmt.Sprintf("%s%d", getColumn(j-1), i+1)
+					val, err := f.GetCellValue(s, cellName)
+					if err != nil || len([]rune(val)) <= 0 {
+						continue
+					}
+					cell := NewCell(val)
+					cell.SetName(cellName)
+					sh.AddRow(*NewRow(
+						cell,
+					))
+				}
+			}
+
+			ch <- sh
+			wg.Done()
+		}(sheetCh)
+	}
+
+	go func() {
+		wg.Wait()
+		close(sheetCh)
+	}()
+
+	for s := range sheetCh {
+		if len(s.rows) > 0 {
+			file.AddSheet(*s)
+		}
+	}
+
+	return file, nil
 }
